@@ -31,13 +31,13 @@ if run_optimization:
         teams_map = {team['id']: team['name'] for team in data_static['teams']}
         positions_map = {pos['id']: pos['singular_name'] for pos in data_static['element_types']}
         
-        # זיהוי המחזור הקרוב ביותר שטרם שוחק
+        # זיהוי המחזור הקרוב ביותר כמספר בודד (תיקון השגיאה)
         events_df = pd.DataFrame(data_static['events'])
-        next_gw = events_df.loc[events_df['is_next'] == True, 'id'].values
-        if len(next_gw) > 0:
-            current_gw = next_gw
+        next_gw_rows = events_df[events_df['is_next'] == True]
+        if not next_gw_rows.empty:
+            current_gw = int(next_gw_rows['id'].values[0])
         else:
-            current_gw = 1 # ברירת מחדל אם העונה טרם החלה
+            current_gw = 1 
 
         players_df = pd.DataFrame(data_static['elements'])
         players_df['team_name'] = players_df['team'].map(teams_map)
@@ -50,11 +50,9 @@ if run_optimization:
         fixtures_data = requests.get(url_fixtures).json()
         fixtures_df = pd.DataFrame(fixtures_data)
 
-        # סינון המשחקים לטווח המחזורים שבחרנו (אופק תכנון)
         max_gw = current_gw + horizon_weeks - 1
         future_fixtures = fixtures_df[(fixtures_df['event'] >= current_gw) & (fixtures_df['event'] <= max_gw)].copy()
 
-        # חישוב ממוצע קושי לכל קבוצה בטוח הטווח
         team_difficulties = {}
         for team_id, team_name in teams_map.items():
             home_games = future_fixtures[future_fixtures['team_h'] == team_id]['team_h_difficulty']
@@ -62,62 +60,45 @@ if run_optimization:
             all_diffs = pd.concat([home_games, away_games])
             
             if not all_diffs.empty:
-                # ממוצע קושי (ככל שקושי נמוך יותר, הציון טוב יותר. נהפוך את זה למקדם)
                 avg_diff = all_diffs.mean()
-                # המרה למקדם: קושי ממוצע 2 הוא ניטרלי, קושי נמוך נותן בוסט
                 team_difficulties[team_name] = max(0.5, 3.5 - (avg_diff * 0.5))
             else:
                 team_difficulties[team_name] = 1.0
 
-        # 3. מודל דקות צפויות (xMins Factor) מבוסס נתוני עונה
-        # משתמש ביחס בין דקות ששחקו בפועל לבין מקסימום דקות אפשריות כדי לתת מקדם מהימנות
+        # 3. מודל דקות צפויות (xMins Factor)
         def calculate_xmins_factor(row):
-            total_mins_possible = row['minutes'] + 1  # מניעת חלוקה באפס
-            if total_mins_possible <= 90: # תחילת עונה / שחקן ספסל
+            total_mins_possible = row['minutes'] + 1 
+            if total_mins_possible <= 90: 
                 return 1.0 if row['status'] == 'a' else 0.0
-            # מדד אמינות דקות מבוסס פתיחות בהרכב
             starts = row.get('starts', 0)
             history_factor = min(1.0, max(0.3, starts / max(1, (row['minutes'] / 90))))
             return history_factor
 
         players_df['xmins_factor'] = players_df.apply(calculate_xmins_factor, axis=1)
-
-        # סינון שחקנים כשירים בלבד שמשחקים
         merged_df = players_df[(players_df['status'] == 'a') & (players_df['xmins_factor'] > 0.2)].copy()
 
-        # 4. מודל ה-xPts המתקדם (משולב Multi-GW + CS + Defcon + xMins)
+        # 4. מודל ה-xPts המתקדם
         def calculate_advanced_xpts(row):
             base = row['form'] if row['form'] > 0 else (row['now_cost'] / 2.0)
-            # מקדם קושי רב-מחזורי של הקבוצה
             fixture_mult = team_difficulties.get(row['team_name'], 1.0)
             xmins = row['xmins_factor']
             pos = row['position']
             
-            # פרוקסי לשער נקי מבוסס קושי היריבות בטווח
             cs_prob = min(0.6, max(0.1, fixture_mult * 0.2))
-            
             attacking_threat = base * fixture_mult * xmins
             
             if pos in ['Defender', 'Goalkeeper']:
-                cs_points = cs_prob * 4.0
-                defcon_points = 1.2 
-                return attacking_threat + cs_points + defcon_points
-                
+                return attacking_threat + (cs_prob * 4.0) + 1.2
             elif pos == 'Midfielder':
-                cs_points = cs_prob * 1.0
-                defcon_points = 0.6 
-                return (attacking_threat * 1.1) + cs_points + defcon_points
-                
+                return (attacking_threat * 1.1) + (cs_prob * 1.0) + 0.6
             elif pos == 'Forward':
-                defcon_points = 0.2
-                return (attacking_threat * 1.2) + defcon_points
-                
+                return (attacking_threat * 1.2) + 0.2
             return attacking_threat
 
         merged_df['xPts'] = merged_df.apply(calculate_advanced_xpts, axis=1).round(2)
         merged_df = merged_df.reset_index(drop=True)
 
-        # 5. פותר האופטימיזציה Pro (סגל, הרכב, קפטן, העברות ומינוסים)
+        # 5. פותר האופטימיזציה Pro
         current_squad_ids = merged_df['id'].head(15).tolist() 
 
         prob = pulp.LpProblem("FPL_Pro_Solver", pulp.LpMaximize)
@@ -128,13 +109,11 @@ if run_optimization:
         transfer_in_vars = {i: pulp.LpVariable(f"transfer_in_{i}", cat='Binary') for i in merged_df.index}
         hits_var = pulp.LpVariable("hits", lowBound=0, cat='Integer')
 
-        # פונקציית מטרה: מקסום תוחלת נקודות טווח-ארוך פחות קנסות מינוסים
         prob += pulp.lpSum([
             merged_df.loc[i, 'xPts'] * starter_vars[i] + 
             merged_df.loc[i, 'xPts'] * captain_vars[i] for i in merged_df.index
         ]) - (4.0 * hits_var), "Total_Net_Expected_Points"
 
-        # אילוצים
         prob += pulp.lpSum([merged_df.loc[i, 'now_cost'] * squad_vars[i] for i in merged_df.index]) <= 100.0, "Budget"
         prob += pulp.lpSum([squad_vars[i] for i in merged_df.index]) == 15, "Total_Squad_15"
 
