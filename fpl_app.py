@@ -46,7 +46,6 @@ with st.spinner("טוען נתונים חיים מה-API של הפנטזי..."):
 # --- סיידבר: הגדרות גלובליות ושליפת קבוצה אמיתית ---
 st.sidebar.header("⚙️ הגדרות ניתוח וניהול")
 
-# תיקון באג הסליידר בעזרת select_slider
 horizon_weeks = st.sidebar.select_slider("אופק תכנון (מחזורים קדימה)", options=[1, 2, 3, 4, 5], value=3)
 free_transfers = st.sidebar.number_input("העברות חינמיות זמינות", min_value=1, max_value=5, value=1)
 
@@ -177,7 +176,7 @@ with tab3:
 with tab4:
     st.subheader("🛡️ הסגל שלך בפנטזי")
     if team_id_input:
-        st.success(נושא קבוצה בהצלחה עבור Team ID: {team_id_input})
+        st.success(f"הקבוצה נטענה בהצלחה עבור Team ID: {team_id_input}")
     else:
         st.info("הכנס את ה-Team ID שלך בסיידבר כדי לראות את הקבוצה האמיתית שלך. בינתיים מוצגת סביבת הדגמה.")
         
