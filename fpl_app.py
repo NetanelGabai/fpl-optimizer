@@ -45,7 +45,8 @@ with st.spinner("טוען נתונים חיים מה-API..."):
 
 # --- סיידבר: הגדרות ---
 st.sidebar.header("⚙️ הגדרות ניתוח")
-horizon_weeks = st.sidebar.select_slider("אופק תכנון (מחזורים קדימה)", options=[1, 2, 3, 4, 5], value=3)
+# כאן השינוי - השתמשנו ב-selectbox במקום בסליידר
+horizon_weeks = st.sidebar.selectbox("אופק תכנון (מחזורים קדימה):", options=[1, 2, 3, 4, 5], index=2)
 free_transfers = st.sidebar.number_input("העברות חינמיות זמינות", min_value=1, max_value=5, value=1)
 
 st.sidebar.markdown("---")
@@ -126,4 +127,5 @@ with tab5:
         prob += pulp.lpSum([squad_vars[i] for i in merged_df.index]) == 15
         if prob.solve() == 1:
             st.success("הפתרון נמצא!")
-            st.dataframe(merged_df[[squad_vars[i].varValue > 0.5 for i in merged_df.index]][['web_name', 'team_name']], hide_index=True)
+            res_df = merged_df[[squad_vars[i].varValue > 0.5 for i in merged_df.index]][['web_name', 'team_name']]
+            st.dataframe(res_df, hide_index=True)
