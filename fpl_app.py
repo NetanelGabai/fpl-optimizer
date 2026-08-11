@@ -31,7 +31,6 @@ if run_optimization:
         teams_map = {team['id']: team['name'] for team in data_static['teams']}
         positions_map = {pos['id']: pos['singular_name'] for pos in data_static['element_types']}
         
-        # זיהוי המחזור הקרוב ביותר כמספר בודד (תיקון השגיאה)
         events_df = pd.DataFrame(data_static['events'])
         next_gw_rows = events_df[events_df['is_next'] == True]
         if not next_gw_rows.empty:
@@ -171,8 +170,9 @@ if run_optimization:
                     else:
                         bench.append(display_dict)
 
-            starters_df = pd.DataFrame(starters).sort_values(by=['position', 'xPts (אופק)'], ascending=[True, False])
-            bench_df = pd.DataFrame(bench).sort_values(by=['position', 'מחיר (M)'], ascending=[True, True])
+            # תיקון שמות העמודות למיון בהתאם לשמות העבריים
+            starters_df = pd.DataFrame(starters).sort_values(by=['עמדה', 'xPts (אופק)'], ascending=[True, False])
+            bench_df = pd.DataFrame(bench).sort_values(by=['עמדה', 'מחיר (M)'], ascending=[True, True])
 
             total_cost = starters_df['מחיר (M)'].sum() + bench_df['מחיר (M)'].sum()
             total_xpts = starters_df['xPts (אופק)'].sum()
