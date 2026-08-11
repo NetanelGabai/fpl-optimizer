@@ -46,7 +46,8 @@ with st.spinner("טוען נתונים חיים מה-API של הפנטזי..."):
 # --- סיידבר: הגדרות גלובליות ושליפת קבוצה אמיתית ---
 st.sidebar.header("⚙️ הגדרות ניתוח וניהול")
 
-horizon_weeks = st.sidebar.select_slider("אופק תכנון (מחזורים קדימה)", options=[1, 2, 3, 4, 5], value=3)
+# החלפת הסליידר בתיבת בחירה (selectbox) שפתרה לחלוטין את בעיית הכיווניות
+horizon_weeks = st.sidebar.selectbox("אופק תכנון (מחזורים קדימה)", options=[1, 2, 3, 4, 5], index=2)
 free_transfers = st.sidebar.number_input("העברות חינמיות זמינות", min_value=1, max_value=5, value=1)
 
 st.sidebar.markdown("---")
