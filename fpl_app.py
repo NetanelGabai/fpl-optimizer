@@ -43,12 +43,18 @@ def load_fpl_data():
 with st.spinner("טוען נתונים חיים מה-API של הפנטזי..."):
     players_df, fixtures_df, teams_map, current_gw = load_fpl_data()
 
-# --- סיידבר: הגדרות גלובליות ---
-st.sidebar.header("⚙️ הגדרות ניתוח")
-horizon_weeks = st.sidebar.slider("אופק תכנון (מחזורים קדימה)", min_value=1, max_value=5, value=3)
+# --- סיידבר: הגדרות גלובליות ושליפת קבוצה אמיתית ---
+st.sidebar.header("⚙️ הגדרות ניתוח וניהול")
+
+# תיקון באג הסליידר בעזרת select_slider
+horizon_weeks = st.sidebar.select_slider("אופק תכנון (מחזורים קדימה)", options=[1, 2, 3, 4, 5], value=3)
 free_transfers = st.sidebar.number_input("העברות חינמיות זמינות", min_value=1, max_value=5, value=1)
 
-# --- עיבוד נתונים וחישובים (מתבצע מאחורי הקלעים) ---
+st.sidebar.markdown("---")
+st.sidebar.subheader("🛡️ הקבוצה שלך מ-FPL")
+team_id_input = st.sidebar.text_input("הכנס את ה-FPL Team ID שלך:", value="")
+
+# --- עיבוד נתונים וחישובים ---
 max_gw = current_gw + horizon_weeks - 1
 future_fixtures = fixtures_df[(fixtures_df['event'] >= current_gw) & (fixtures_df['event'] <= max_gw)].copy()
 
@@ -105,12 +111,27 @@ def calculate_advanced_xpts(row):
 merged_df['xPts'] = merged_df.apply(calculate_advanced_xpts, axis=1).round(2)
 merged_df = merged_df.reset_index(drop=True)
 
+# משיכת הסגל האמיתי לפי Team ID אם הוזן
+current_squad_ids = []
+if team_id_input:
+    try:
+        picks_url = f"https://fantasy.premierleague.com/api/entry/{team_id_input}/event/{current_gw}/picks/"
+        picks_res = requests.get(picks_url).json()
+        if 'picks' in picks_res:
+            current_squad_ids = [p['element'] for p in picks_res['picks']]
+    except:
+        st.sidebar.error("שגיאה בשליפת הקבוצה. בדוק את ה-Team ID.")
+
+if not current_squad_ids:
+    current_squad_ids = merged_df['id'].head(15).tolist()
+
 # --- יצירת לשוניות ניווט (Tabs) ---
-tab1, tab2, tab3, tab4 = st.tabs([
-    "📊 שחקנים מובילים (Leaderboard)", 
-    "📅 לוח משחקים וקושי (FDR)", 
-    "🛡️ הסגל הנוכחי שלי", 
-    "🚀 מנוע אופטימיזציה (Solver)"
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    "📊 שחקנים מובילים", 
+    "📅 לוח משחקים וקושי", 
+    "👑 מטריצת קפטנים", 
+    "🛡️ הסגל שלי", 
+    "🚀 מנוע אופטימיזציה"
 ])
 
 # --- TAB 1: שחקנים מובילים ---
@@ -124,7 +145,7 @@ with tab1:
         
     display_lb = display_lb.sort_values(by='xPts', ascending=False)[['web_name', 'team_name', 'position', 'now_cost', 'form', 'xPts']]
     display_lb.columns = ['שחקן', 'קבוצה', 'עמדה', 'מחיר (M)', 'כושר (Form)', 'xPts (באופק)']
-    st.dataframe(display_lb.head(20), use_container_width=True, hide_index=True)
+    st.dataframe(display_lb.head(25), use_container_width=True, hide_index=True)
 
 # --- TAB 2: לוח משחקים וקושי קבוצתי ---
 with tab2:
@@ -141,25 +162,37 @@ with tab2:
     fix_df = pd.DataFrame(fixtures_table).sort_values(by='ציון נוחות ל"ווליו"', ascending=False)
     st.dataframe(fix_df, use_container_width=True, hide_index=True)
 
-# --- TAB 3: הסגל הנוכחי שלי ---
+# --- TAB 3: מטריצת קפטנים ---
 with tab3:
-    st.subheader("🛡️ הסגל הנוכחי שלך (סימולציה אוטומטית מבוססת שווי)")
-    st.info("כברירת מחדל מוצגים 15 השחקנים המובילים במודל המייצגים את הסגל הנוכחי. בהמשך נחבר את ה-Team ID האמיתי שלך.")
+    st.subheader("👑 מטריצת קפטנים מומלצים למחזור הקרוב")
+    st.markdown("השחקנים המובילים ביותר למחזור הקרוב עם חישוב פוטנציאל ניקוד כפול (Captain xPts).")
     
-    my_squad_preview = merged_df.sort_values(by='xPts', ascending=False).head(15)
-    squad_display = my_squad_preview[['web_name', 'team_name', 'position', 'now_cost', 'xPts']]
+    captains_df = merged_df.sort_values(by='xPts', ascending=False).head(10).copy()
+    captains_df['Captain xPts'] = captains_df['xPts'] * 2
+    captains_display = captains_df[['web_name', 'team_name', 'position', 'now_cost', 'form', 'xPts', 'Captain xPts']]
+    captains_display.columns = ['שחקן', 'קבוצה', 'עמדה', 'מחיר (M)', 'כושר (Form)', 'xPts רגיל', 'xPts כקפטן (©)']
+    st.dataframe(captains_display, use_container_width=True, hide_index=True)
+
+# --- TAB 4: הסגל הנוכחי שלי ---
+with tab4:
+    st.subheader("🛡️ הסגל שלך בפנטזי")
+    if team_id_input:
+        st.success(נושא קבוצה בהצלחה עבור Team ID: {team_id_input})
+    else:
+        st.info("הכנס את ה-Team ID שלך בסיידבר כדי לראות את הקבוצה האמיתית שלך. בינתיים מוצגת סביבת הדגמה.")
+        
+    my_squad_df = merged_df[merged_df['id'].isin(current_squad_ids)]
+    squad_display = my_squad_df[['web_name', 'team_name', 'position', 'now_cost', 'xPts']]
     squad_display.columns = ['שחקן', 'קבוצה', 'עמדה', 'מחיר (M)', 'xPts']
     st.dataframe(squad_display, use_container_width=True, hide_index=True)
 
-# --- TAB 4: מנוע האופטימיזציה (הסולבר) ---
-with tab4:
-    st.subheader("🚀 הרצת אלגוריתם אופטימיזציה מלאה")
+# --- TAB 5: מנוע האופטימיזציה (הסולבר) ---
+with tab5:
+    st.subheader("🚀 הרצת אלגוריתם אופטימיזציה לסגל שלך")
     run_solver = st.button("הפעל פותר (Solver)")
     
     if run_solver:
         with st.spinner("מריץ חישוב לינארי להרכב האופטימלי..."):
-            current_squad_ids = merged_df['id'].head(15).tolist() 
-
             prob = pulp.LpProblem("FPL_Pro_Solver", pulp.LpMaximize)
             squad_vars = {i: pulp.LpVariable(f"squad_{i}", cat='Binary') for i in merged_df.index}
             starter_vars = {i: pulp.LpVariable(f"starter_{i}", cat='Binary') for i in merged_df.index}
@@ -218,6 +251,17 @@ with tab4:
                             bench.append(d_dict)
 
                 st.success("האופטימיזציה הסתיימה בהצלחה!")
-                st.dataframe(pd.DataFrame(starters), use_container_width=True, hide_index=True)
+                col_main, col_bench = st.columns([2, 1])
+                with col_main:
+                    st.subheader("🌟 הרכב פותח מומלץ")
+                    st.dataframe(pd.DataFrame(starters), use_container_width=True, hide_index=True)
+                with col_bench:
+                    st.subheader("🪑 ספסל")
+                    st.dataframe(pd.DataFrame(bench), use_container_width=True, hide_index=True)
+                
+                if transfers_in:
+                    st.info(f"🔄 שחקנים מומלצים לרכישה: {', '.join(transfers_in)}")
+                else:
+                    st.info("🔄 אין צורך בהעברות, הסגל הנוכחי אופטימלי.")
             else:
                 st.error("לא נמצא פתרון תחת האילוצים.")
