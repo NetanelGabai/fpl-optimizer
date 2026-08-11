@@ -59,19 +59,20 @@ if load_method == "FPL Official ID":
     if team_id_input:
         try:
             picks_url = f"https://fantasy.premierleague.com/api/entry/{team_id_input}/event/{current_gw}/picks/"
-            picks_res = requests.get(picks_url).json()
-            if 'picks' in picks_res:
-                current_squad_ids = [p['element'] for p in picks_res['picks']]
-        except:
-            st.sidebar.error("שגיאה בשליפת הקבוצה.")
+            res = requests.get(picks_url)
+            if res.status_code == 200:
+                picks_res = res.json()
+                if 'picks' in picks_res:
+                    current_squad_ids = [p['element'] for p in picks_res['picks']]
+            else:
+                st.sidebar.warning("⚠️ לא ניתן לשלוף הרכב מה-API (ייתכן שהמחזור טרם החל או שהסגל נעול). נסה הזנה ידנית.")
+        except Exception as e:
+            st.sidebar.error(f"שגיאה בשליפת הקבוצה: {e}")
 else:
-    manual_names = st.sidebar.text_area("הדבק שמות שחקנים (מופרדים בפסיק):")
+    manual_names = st.sidebar.text_area("הדבק שמות שחקנים (מופרדים בפסיק, למשל: Haaland, Saka, Palmer):")
     if manual_names:
         names_list = [name.strip() for name in manual_names.split(',')]
         current_squad_ids = players_df[players_df['web_name'].isin(names_list)]['id'].tolist()
-
-if not current_squad_ids:
-    current_squad_ids = players_df.head(15)['id'].tolist()
 
 # --- חישובים וקשיים ---
 max_gw = current_gw + horizon_weeks - 1
@@ -100,7 +101,6 @@ def calculate_xmins_factor(row):
 players_df['xmins_factor'] = players_df.apply(calculate_xmins_factor, axis=1)
 merged_df = players_df[(players_df['status'] == 'a') & (players_df['xmins_factor'] > 0.2)].copy()
 
-# מודל ה-xPts המתוקן והמלא (מטפל בשחקנים עם form=0)
 def calculate_advanced_xpts(row):
     base = row['form'] if row['form'] > 0 else (row['now_cost'] / 2.0)
     fixture_mult = team_difficulties.get(row['team_name'], 1.0)
@@ -157,70 +157,79 @@ with tab3:
 
 with tab4:
     st.subheader("🛡️ הסגל שלך")
-    squad_df = merged_df[merged_df['id'].isin(current_squad_ids)]
-    squad_display = squad_df[['web_name', 'team_name', 'position', 'now_cost', 'xPts']]
-    squad_display.columns = ['שחקן', 'קבוצה', 'עמדה', 'מחיר (M)', 'xPts']
-    st.dataframe(squad_display, use_container_width=True, hide_index=True)
+    if current_squad_ids:
+        squad_df = merged_df[merged_df['id'].isin(current_squad_ids)]
+        if not squad_df.empty:
+            squad_display = squad_df[['web_name', 'team_name', 'position', 'now_cost', 'xPts']]
+            squad_display.columns = ['שחקן', 'קבוצה', 'עמדה', 'מחיר (M)', 'xPts']
+            st.dataframe(squad_display, use_container_width=True, hide_index=True)
+        else:
+            st.info("השחקנים שנבחרו לא נמצאו במאגר הפעילים.")
+    else:
+        st.info("👈 הכנס את ה-Team ID שלך בסיידבר או בחר ב'הזנה ידנית' כדי לראות את הסגל שלך כאן.")
 
 with tab5:
     st.subheader("🚀 הרצת אלגוריתם אופטימיזציה לסגל")
     if st.button("הפעל פותר (Solver)"):
-        prob = pulp.LpProblem("FPL_Solver", pulp.LpMaximize)
-        squad_vars = {i: pulp.LpVariable(f"s_{i}", cat='Binary') for i in merged_df.index}
-        starter_vars = {i: pulp.LpVariable(f"starter_{i}", cat='Binary') for i in merged_df.index}
-        captain_vars = {i: pulp.LpVariable(f"captain_{i}", cat='Binary') for i in merged_df.index}
-        transfer_in_vars = {i: pulp.LpVariable(f"transfer_in_{i}", cat='Binary') for i in merged_df.index}
-        hits_var = pulp.LpVariable("hits", lowBound=0, cat='Integer')
-
-        prob += pulp.lpSum([merged_df.loc[i, 'xPts'] * starter_vars[i] + merged_df.loc[i, 'xPts'] * captain_vars[i] for i in merged_df.index]) - (4.0 * hits_var)
-        prob += pulp.lpSum([merged_df.loc[i, 'now_cost'] * squad_vars[i] for i in merged_df.index]) <= 100.0
-        prob += pulp.lpSum([squad_vars[i] for i in merged_df.index]) == 15
-        prob += pulp.lpSum([squad_vars[i] for i in merged_df.index if merged_df.loc[i, 'position'] == 'Goalkeeper']) == 2
-        prob += pulp.lpSum([squad_vars[i] for i in merged_df.index if merged_df.loc[i, 'position'] == 'Defender']) == 5
-        prob += pulp.lpSum([squad_vars[i] for i in merged_df.index if merged_df.loc[i, 'position'] == 'Midfielder']) == 5
-        prob += pulp.lpSum([squad_vars[i] for i in merged_df.index if merged_df.loc[i, 'position'] == 'Forward']) == 3
-
-        for team in merged_df['team_name'].unique():
-            prob += pulp.lpSum([squad_vars[i] for i in merged_df.index if merged_df.loc[i, 'team_name'] == team]) <= 3
-
-        for i in merged_df.index:
-            prob += starter_vars[i] <= squad_vars[i]
-            prob += captain_vars[i] <= starter_vars[i]
-
-        prob += pulp.lpSum([starter_vars[i] for i in merged_df.index]) == 11
-        prob += pulp.lpSum([captain_vars[i] for i in merged_df.index]) == 1
-        prob += pulp.lpSum([starter_vars[i] for i in merged_df.index if merged_df.loc[i, 'position'] == 'Goalkeeper']) == 1
-        prob += pulp.lpSum([starter_vars[i] for i in merged_df.index if merged_df.loc[i, 'position'] == 'Defender']) >= 3
-        prob += pulp.lpSum([starter_vars[i] for i in merged_df.index if merged_df.loc[i, 'position'] == 'Midfielder']) >= 2
-        prob += pulp.lpSum([starter_vars[i] for i in merged_df.index if merged_df.loc[i, 'position'] == 'Forward']) >= 1
-
-        for i in merged_df.index:
-            is_in_current = 1 if merged_df.loc[i, 'id'] in current_squad_ids else 0
-            prob += transfer_in_vars[i] >= squad_vars[i] - is_in_current
-
-        prob += hits_var >= pulp.lpSum([transfer_in_vars[i] for i in merged_df.index]) - free_transfers
-        prob.solve()
-
-        if prob.status == 1:
-            starters, bench = [], []
-            for i in merged_df.index:
-                if squad_vars[i].varValue and squad_vers[i].varValue > 0.5 if 'squad_vers' in locals() else squad_vars[i].varValue > 0.5:
-                    p_data = merged_df.loc[i].copy()
-                    if captain_vars[i].varValue and captain_vars[i].varValue > 0.5:
-                        p_data['web_name'] = f"© {p_data['web_name']}"
-                        p_data['xPts'] *= 2
-                    d_dict = {'שחקן': p_data['web_name'], 'קבוצה': p_data['team_name'], 'עמדה': p_data['position'], 'מחיר (M)': p_data['now_cost'], 'xPts': p_data['xPts']}
-                    if starter_vars[i].varValue and starter_vars[i].varValue > 0.5:
-                        starters.append(d_dict)
-                    else:
-                        bench.append(d_dict)
-            st.success("הפתרון נמצא בהצלחה!")
-            col1, col2 = st.columns(2)
-            with col1:
-                st.subheader("🌟 הרכב פותח")
-                st.dataframe(pd.DataFrame(starters), use_container_width=True, hide_index=True)
-            with col2:
-                st.subheader("🪑 ספסל")
-                st.dataframe(pd.DataFrame(bench), use_container_width=True, hide_index=True)
+        if not current_squad_ids:
+            st.error("יש לטעון תחילה סגל קבוצה (דרך ה-ID או הזנה ידנית) כדי להריץ את האופטימיזציה.")
         else:
-            st.error("לא נמצא פתרון תחת האילוצים.")
+            prob = pulp.LpProblem("FPL_Solver", pulp.LpMaximize)
+            squad_vars = {i: pulp.LpVariable(f"s_{i}", cat='Binary') for i in merged_df.index}
+            starter_vars = {i: pulp.LpVariable(f"starter_{i}", cat='Binary') for i in merged_df.index}
+            captain_vars = {i: pulp.LpVariable(f"captain_{i}", cat='Binary') for i in merged_df.index}
+            transfer_in_vars = {i: pulp.LpVariable(f"transfer_in_{i}", cat='Binary') for i in merged_df.index}
+            hits_var = pulp.LpVariable("hits", lowBound=0, cat='Integer')
+
+            prob += pulp.lpSum([merged_df.loc[i, 'xPts'] * starter_vars[i] + merged_df.loc[i, 'xPts'] * captain_vars[i] for i in merged_df.index]) - (4.0 * hits_var)
+            prob += pulp.lpSum([merged_df.loc[i, 'now_cost'] * squad_vars[i] for i in merged_df.index]) <= 100.0
+            prob += pulp.lpSum([squad_vars[i] for i in merged_df.index]) == 15
+            prob += pulp.lpSum([squad_vars[i] for i in merged_df.index if merged_df.loc[i, 'position'] == 'Goalkeeper']) == 2
+            prob += pulp.lpSum([squad_vars[i] for i in merged_df.index if merged_df.loc[i, 'position'] == 'Defender']) == 5
+            prob += pulp.lpSum([squad_vars[i] for i in merged_df.index if merged_df.loc[i, 'position'] == 'Midfielder']) == 5
+            prob += pulp.lpSum([squad_vars[i] for i in merged_df.index if merged_df.loc[i, 'position'] == 'Forward']) == 3
+
+            for team in merged_df['team_name'].unique():
+                prob += pulp.lpSum([squad_vars[i] for i in merged_df.index if merged_df.loc[i, 'team_name'] == team]) <= 3
+
+            for i in merged_df.index:
+                prob += starter_vars[i] <= squad_vars[i]
+                prob += captain_vars[i] <= starter_vars[i]
+
+            prob += pulp.lpSum([starter_vars[i] for i in merged_df.index]) == 11
+            prob += pulp.lpSum([captain_vars[i] for i in merged_df.index]) == 1
+            prob += pulp.lpSum([starter_vars[i] for i in merged_df.index if merged_df.loc[i, 'position'] == 'Goalkeeper']) == 1
+            prob += pulp.lpSum([starter_vars[i] for i in merged_df.index if merged_df.loc[i, 'position'] == 'Defender']) >= 3
+            prob += pulp.lpSum([starter_vars[i] for i in merged_df.index if merged_df.loc[i, 'position'] == 'Midfielder']) >= 2
+            prob += pulp.lpSum([starter_vars[i] for i in merged_df.index if merged_df.loc[i, 'position'] == 'Forward']) >= 1
+
+            for i in merged_df.index:
+                is_in_current = 1 if merged_df.loc[i, 'id'] in current_squad_ids else 0
+                prob += transfer_in_vars[i] >= squad_vars[i] - is_in_current
+
+            prob += hits_var >= pulp.lpSum([transfer_in_vars[i] for i in merged_df.index]) - free_transfers
+            prob.solve()
+
+            if prob.status == 1:
+                starters, bench = [], []
+                for i in merged_df.index:
+                    if squad_vars[i].varValue and squad_vars[i].varValue > 0.5:
+                        p_data = merged_df.loc[i].copy()
+                        if captain_vars[i].varValue and captain_vars[i].varValue > 0.5:
+                            p_data['web_name'] = f"© {p_data['web_name']}"
+                            p_data['xPts'] *= 2
+                        d_dict = {'שחקן': p_data['web_name'], 'קבוצה': p_data['team_name'], 'עמדה': p_data['position'], 'מחיר (M)': p_data['now_cost'], 'xPts': p_data['xPts']}
+                        if starter_vars[i].varValue and starter_vars[i].varValue > 0.5:
+                            starters.append(d_dict)
+                        else:
+                            bench.append(d_dict)
+                st.success("הפתרון נמצא בהצלחה!")
+                col1, col2 = st.columns(2)
+                with col1:
+                    st.subheader("🌟 הרכב פותח")
+                    st.dataframe(pd.DataFrame(starters), use_container_width=True, hide_index=True)
+                with col2:
+                    st.subheader("🪑 ספסל")
+                    st.dataframe(pd.DataFrame(bench), use_container_width=True, hide_index=True)
+            else:
+                st.error("לא נמצא פתרון תחת האילוצים.")
